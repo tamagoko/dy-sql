@@ -30,6 +30,7 @@ from .databases import (
     set_database_init_hook,
     set_default_connection_parameters,
 )
+from .multitenancy import use_database_tenant, tenant_database_manager
 from .exceptions import DBNotPreparedError
 
 
@@ -53,5 +54,7 @@ __all__ = [
     "set_current_database",
     "set_database_init_hook",
     "set_default_connection_parameters",
+    "use_database_tenant",
+    "tenant_database_manager",
     "DBNotPreparedError",
 ]

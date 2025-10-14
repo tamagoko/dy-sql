@@ -35,10 +35,10 @@ Component Breakdown
   initialization so that when a decorator function is called, it can setup a connection pool to a correct database
 * **is_set_current_database_supported** - this function may be used to determine if the ``*_current_database`` methods
   may be used or not
-* **set_current_database** - (only supported on Python 3.7+) this function may be used to set the database name for the
-  current async context (not thread), this is especially useful for multitenant applications
-* **reset_current_database** - (only supported on Python 3.7+) helper method to reset the current database after
-  ``set_current_database`` has been used in an async context
+* **set_current_database** - this function may be used to set the database name for the current async context
+  (not thread), this is especially useful for multitenant applications
+* **reset_current_database** - helper method to reset the current database after ``set_current_database`` has
+  been used in an async context
 * **set_database_init_hook** - sets a method to call whenever a new database is initialized
 * **QueryData** - a class that may be returned or yielded from ``sql*`` decorated methods which
   contains query information
@@ -99,28 +99,46 @@ The ``set_database_init_hook`` method may be used in this case. As an example, t
 Multitenancy
 ============
 In some applications, it may be useful to set a database other than the default database in order to support
-database-per-tenant configurations. This may be done using the ``set_current_database`` and ``reset_current_database``
-methods.
+database-per-tenant configurations. This may be done using various provided methods.
 
 .. code-block:: python
 
-    from dysql import reset_current_database, set_current_database
+    from dysql import (
+        set_default_connection_parameters,
+        reset_current_database,
+        set_current_database,
+        use_database_tenant,
+        tenant_database_manager,
+        sqlquery,
+        QueryData,
+    )
 
-    def use_database_for_query():
-        set_database_parameters(
+    def init():
+        # Initialize all databases up-front using an arbitrary database key to refer to them later
+        set_default_connection_parameters(
             ...
-            'db1',
+            database_key='db1',
         )
+        set_default_connection_parameters(
+            ...
+            database_key='db2',
+        )
+
+    def tenant_query_with_manual_set_reset():
         set_current_database('db2')
         try:
-            # Queries db2 and not db1
             query_database()
         finally:
             reset_current_database()
 
-.. warning::
-    These methods are only supported in Python 3.7+ due to their use of the ``contextvars`` module. The
-    ``is_set_current_database_supported`` method is provided to help tell if these methods may be used.
+    def tenant_query_with_context_manager():
+        with tenant_database_manager("db2"):
+            return query_database()
+
+    @use_database_tenant("db2")
+    @sqlquery()
+    def tenant_query_with_decorator():
+        return QueryData("SELECT * FROM users")
 
 Decorators
 ==========

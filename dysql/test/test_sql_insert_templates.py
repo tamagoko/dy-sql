@@ -11,14 +11,10 @@ import pytest
 import dysql
 from dysql import QueryData, sqlupdate, QueryDataError
 from dysql.test import (
-    _verify_query,
-    _verify_query_args,
-    mock_create_engine_fixture,
+    verify_query,
+    verify_query_args,
     setup_mock_engine,
 )
-
-
-_ = mock_create_engine_fixture
 
 
 @pytest.fixture(name="mock_engine", autouse=True)
@@ -50,7 +46,7 @@ def test_insert_non_query_data_fails():
 
 def test_insert_single_column(mock_engine):
     insert_into_single_value(["Tom", "Jerry"])
-    _verify_query(
+    verify_query(
         mock_engine,
         "INSERT INTO table(name) VALUES ( :values__name_col_0 ), ( :values__name_col_1 ) ",
     )
@@ -58,9 +54,7 @@ def test_insert_single_column(mock_engine):
 
 def test_insert_single_column_single_value(mock_engine):
     insert_into_single_value("Tom")
-    _verify_query(
-        mock_engine, "INSERT INTO table(name) VALUES ( :values__name_col_0 ) "
-    )
+    verify_query(mock_engine, "INSERT INTO table(name) VALUES ( :values__name_col_0 ) ")
 
 
 def test_insert_single_value_empty():
@@ -84,12 +78,12 @@ def test_insert_multiple_values(mock_engine):
             {"name": "Jerry", "email": "jerry@adobe.com"},
         ]
     )
-    _verify_query(
+    verify_query(
         mock_engine,
         "INSERT INTO table(name, email) VALUES ( :values__users_0_0, :values__users_0_1 ), "
         "( :values__users_1_0, :values__users_1_1 ) ",
     )
-    _verify_query_args(
+    verify_query_args(
         mock_engine,
         {
             "values__users_0_0": "Tom",

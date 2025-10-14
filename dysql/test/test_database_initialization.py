@@ -6,8 +6,6 @@ NOTICE: Adobe permits you to use, modify, and distribute this file in accordance
 with the terms of the Adobe license agreement accompanying it.
 """
 
-# pylint: disable=protected-access
-import sys
 from unittest import mock
 
 import pytest
@@ -20,9 +18,7 @@ from dysql import (
     QueryData,
     set_database_init_hook,
 )
-from dysql.test import mock_create_engine_fixture, setup_mock_engine
-
-_ = mock_create_engine_fixture
+from dysql.test import setup_mock_engine
 
 
 """
@@ -44,17 +40,15 @@ def query():
 @pytest.fixture(autouse=True, name="mock_engine")
 def fixture_mock_engine(mock_create_engine):
     dysql.databases.DatabaseContainerSingleton().clear()
-    dysql.databases._DEFAULT_CONNECTION_PARAMS.clear()
+    dysql.databases._DEFAULT_CONNECTION_PARAMS_BY_KEY.clear()
 
     # Reset the database before the test
-    if dysql.databases.is_set_current_database_supported():
-        dysql.databases.reset_current_database()
+    dysql.databases.reset_current_database()
 
     yield setup_mock_engine(mock_create_engine)
 
     # Reset database after the test as well
-    if dysql.databases.is_set_current_database_supported():
-        dysql.databases.reset_current_database()
+    dysql.databases.reset_current_database()
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +59,7 @@ def fixture_reset_init_hook():
 
 
 def test_nothing_set():
-    dysql.databases._DEFAULT_CONNECTION_PARAMS.clear()
+    dysql.databases._DEFAULT_CONNECTION_PARAMS_BY_KEY.clear()
     with pytest.raises(DBNotPreparedError) as error:
         query()
     assert (
@@ -107,25 +101,31 @@ def test_init_hook(mock_engine):
     init_hook = mock.MagicMock()
     set_database_init_hook(init_hook)
     set_default_connection_parameters("h", "u", "p", "d")
+    dysql.databases.set_current_database("d")
 
     mock_engine.connect().execution_options().execute.return_value = []
     query()
     init_hook.assert_called_once_with("d", mock_engine)
 
 
-@pytest.mark.skipif(
-    "3.6" in sys.version, reason="set_current_database is not supported on python 3.6"
-)
 def test_init_hook_multiple_databases(mock_engine):
     init_hook = mock.MagicMock()
     set_database_init_hook(init_hook)
-    set_default_connection_parameters("h", "u", "p", "d1")
+    set_default_connection_parameters("h1", "u1", "p1", "d1")
+    set_default_connection_parameters("h2", "u2", "p2", "d2")
 
     mock_engine.connect().execution_options().execute.return_value = []
     query()
+    dysql.databases.set_current_database("d1")
+    query()
+    assert init_hook.call_args_list == [
+        mock.call("test", mock_engine),
+        mock.call("d1", mock_engine),
+    ]
     dysql.databases.set_current_database("d2")
     query()
     assert init_hook.call_args_list == [
+        mock.call("test", mock_engine),
         mock.call("d1", mock_engine),
         mock.call("d2", mock_engine),
     ]
@@ -150,18 +150,24 @@ def test_current_database_default(mock_engine, mock_create_engine):
     )
 
 
-def test_different_charset(mock_engine, mock_create_engine):
+def test_different_charset_collation(mock_engine, mock_create_engine):
     db_container = dysql.databases.DatabaseContainerSingleton()
     set_default_connection_parameters(
-        "host", "user", "password", "database", charset="other"
+        "host",
+        "user",
+        "password",
+        "database",
+        charset="other",
+        collation="other_collation",
     )
     assert len(db_container) == 0
+    dysql.databases.set_current_database("database")
     mock_engine.connect().execution_options().execute.return_value = []
     query()
 
     # Only one database is initialized
     mock_create_engine.assert_called_once_with(
-        "mysql+mysqlconnector://user:password@host:3306/database?charset=other",
+        "mysql+mysqlconnector://user:password@host:3306/database?charset=other&collation=other_collation",
         echo=False,
         pool_pre_ping=True,
         pool_recycle=3600,
@@ -170,18 +176,13 @@ def test_different_charset(mock_engine, mock_create_engine):
 
 
 def test_is_set_current_database_supported():
-    # This test only returns different outputs depending on the python runtime
-    if "3.6" in sys.version:
-        assert not dysql.databases.is_set_current_database_supported()
-    else:
-        assert dysql.databases.is_set_current_database_supported()
+    # This test only asserts that true is always returned since this method is deprecated
+    assert dysql.databases.is_set_current_database_supported()
 
 
-@pytest.mark.skipif(
-    "3.6" in sys.version, reason="set_current_database is not supported on python 3.6"
-)
 def test_current_database_set(mock_engine, mock_create_engine):
     db_container = dysql.databases.DatabaseContainerSingleton()
+    set_default_connection_parameters("h1", "u1", "p1", "d1", database_key="db1")
     dysql.databases.set_current_database("db1")
     mock_engine.connect().execution_options().execute.return_value = []
     query()
@@ -190,7 +191,7 @@ def test_current_database_set(mock_engine, mock_create_engine):
     assert "db1" in db_container
     assert db_container.current_database.database == "db1"
     mock_create_engine.assert_called_once_with(
-        "mysql+mysqlconnector://user:password@fake:3306/db1?charset=utf8",
+        "mysql+mysqlconnector://u1:p1@h1:3306/d1?charset=utf8",
         echo=False,
         pool_pre_ping=True,
         pool_recycle=3600,
@@ -198,9 +199,6 @@ def test_current_database_set(mock_engine, mock_create_engine):
     )
 
 
-@pytest.mark.skipif(
-    "3.6" in sys.version, reason="set_current_database is not supported on python 3.6"
-)
 def test_current_database_cached(mock_engine, mock_create_engine):
     db_container = dysql.databases.DatabaseContainerSingleton()
     mock_engine.connect().execution_options().execute.return_value = []
@@ -210,6 +208,7 @@ def test_current_database_cached(mock_engine, mock_create_engine):
     assert "test" in db_container
     assert db_container.current_database.database == "test"
 
+    set_default_connection_parameters("h1", "u1", "p1", "db1")
     dysql.databases.set_current_database("db1")
     query()
     assert len(db_container) == 2
@@ -232,7 +231,7 @@ def test_current_database_cached(mock_engine, mock_create_engine):
             pool_size=10,
         ),
         mock.call(
-            "mysql+mysqlconnector://user:password@fake:3306/db1?charset=utf8",
+            "mysql+mysqlconnector://u1:p1@h1:3306/db1?charset=utf8",
             echo=False,
             pool_pre_ping=True,
             pool_recycle=3600,
