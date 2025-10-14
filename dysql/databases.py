@@ -6,8 +6,9 @@ NOTICE: Adobe permits you to use, modify, and distribute this file in accordance
 with the terms of the Adobe license agreement accompanying it.
 """
 
+import contextvars
 import logging
-import sys
+from collections import defaultdict
 from typing import Callable, Optional
 
 import sqlalchemy
@@ -17,14 +18,8 @@ from .exceptions import DBNotPreparedError
 
 logger = logging.getLogger("database")
 
-_DEFAULT_CONNECTION_PARAMS = {}
-
-try:
-    import contextvars
-
-    CURRENT_DATABASE_VAR = contextvars.ContextVar("dysql_current_database", default="")
-except ImportError:
-    CURRENT_DATABASE_VAR = None
+_DEFAULT_CONNECTION_PARAMS_BY_KEY = defaultdict(dict)
+CURRENT_DATABASE_VAR = contextvars.ContextVar("dysql_current_database", default="")
 
 
 def set_database_init_hook(
@@ -41,24 +36,20 @@ def set_database_init_hook(
 
 def is_set_current_database_supported() -> bool:
     """
-    Determines if the set_current_database method is available on this python runtime.
-    :return: True if available, False otherwise
+    Deprecated, left in for backwards compatibility but always returns true.
+    :return: True
     """
-    return bool(CURRENT_DATABASE_VAR)
+    return True
 
 
-def set_current_database(database: str) -> None:
+def set_current_database(database_key: str) -> None:
     """
-    Sets the current database, may be used for multitenancy. This is only supported on Python 3.7+. This uses
+    Sets the current database key, may be used for multitenancy. This is only supported on Python 3.7+. This uses
     contextvars internally to set the name for the current async context.
-    :param database: the database name to use for this async context
+    :param database_key: the arbitrary database key to use for this async context
     """
-    if not CURRENT_DATABASE_VAR:
-        raise DBNotPreparedError(
-            f'Cannot set the current database on Python "{sys.version}", please upgrade your Python version'
-        )
-    CURRENT_DATABASE_VAR.set(database)
-    logger.debug(f"Set current database to {database}")
+    CURRENT_DATABASE_VAR.set(database_key)
+    logger.debug(f"Set current database to {database_key}")
 
 
 def reset_current_database() -> None:
@@ -69,16 +60,17 @@ def reset_current_database() -> None:
     set_current_database("")
 
 
-def _get_current_database() -> str:
+def _get_current_database_key() -> str:
     """
-    The current database name, using contextvars (if on python 3.7+) or the default database name.
-    :return: The current database name
+    The current database key, using contextvars (if on python 3.7+) or the default database key.
+    :return: The current database key
     """
     database: Optional[str] = None
     if CURRENT_DATABASE_VAR:
         database = CURRENT_DATABASE_VAR.get()
-    if not database:
-        database = _DEFAULT_CONNECTION_PARAMS.get("database")
+    if not database and _DEFAULT_CONNECTION_PARAMS_BY_KEY:
+        # Get first database key
+        database = next(iter(_DEFAULT_CONNECTION_PARAMS_BY_KEY))
     return database
 
 
@@ -94,12 +86,14 @@ def set_default_connection_parameters(
     user: str,
     password: str,
     database: str,
+    database_key: Optional[str] = None,
     port: int = 3306,
     pool_size: int = 10,
     pool_recycle: int = 3600,
     echo_queries: bool = False,
     charset: str = "utf8",
-):  # pylint: disable=too-many-arguments,unused-argument
+    collation: Optional[str] = None,
+):
     """
     Initializes the parameters to use when connecting to the database. This is a subset of the parameters
     used by sqlalchemy. These may be overridden by parameters provided in the QueryData, hence the "default".
@@ -108,12 +102,14 @@ def set_default_connection_parameters(
     :param user: user to connect to the database with
     :param password: password for given user
     :param database: database to connect to
+    :param database_key: optional database key that may be used for multitenant DBs, defaults to the database name
     :param port: the port to connect to (default 3306)
     :param pool_size: number of connections to maintain in the connection pool (default 10)
     :param pool_recycle: amount of time to wait between resetting the connections
                          in the pool (default 3600)
     :param echo_queries: this tells sqlalchemy to print the queries when set to True (default false)
     :param charset: the charset for the sql engine to initialize with. (default utf8)
+    :param collation: the collation for the sql engine to initialize with. (default is not set)
     :exception DBNotPrepareError: happens when required parameters are missing
     """
     _validate_param("host", host)
@@ -121,14 +117,14 @@ def set_default_connection_parameters(
     _validate_param("password", password)
     _validate_param("database", database)
 
-    _DEFAULT_CONNECTION_PARAMS.update(locals())
+    if not database_key:
+        database_key = database
+    _DEFAULT_CONNECTION_PARAMS_BY_KEY[database_key].update(locals())
 
 
 class Database:
-    # pylint: disable=too-few-public-methods
-
-    def __init__(self, database: Optional[str]) -> None:
-        self.database = database
+    def __init__(self, database_key: Optional[str]) -> None:
+        self.database = database_key
         # Engine is lazy-initialized
         self._engine: Optional[sqlalchemy.engine.Engine] = None
 
@@ -142,25 +138,35 @@ class Database:
     @property
     def engine(self) -> sqlalchemy.engine.Engine:
         if not self._engine:
-            user = _DEFAULT_CONNECTION_PARAMS.get("user")
-            password = _DEFAULT_CONNECTION_PARAMS.get("password")
-            host = _DEFAULT_CONNECTION_PARAMS.get("host")
-            port = _DEFAULT_CONNECTION_PARAMS.get("port")
-            charset = _DEFAULT_CONNECTION_PARAMS.get("charset")
+            connection_params = _DEFAULT_CONNECTION_PARAMS_BY_KEY.get(self.database, {})
+            if not connection_params:
+                raise DBNotPreparedError(
+                    f"No connection parameters found for database key '{self.database}'"
+                )
+            user = connection_params.get("user")
+            password = connection_params.get("password")
+            database = connection_params.get("database")
+            host = connection_params.get("host")
+            port = connection_params.get("port")
+            charset = connection_params.get("charset")
+            collation = connection_params.get("collation")
+            collation_str = ""
+            if collation:
+                collation_str = f"&collation={collation}"
 
-            url = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{self.database}?charset={charset}"
+            url = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}?charset={charset}{collation_str}"
             self._engine = sqlalchemy.create_engine(
                 url,
-                pool_recycle=_DEFAULT_CONNECTION_PARAMS.get("pool_recycle"),
-                pool_size=_DEFAULT_CONNECTION_PARAMS.get("pool_size"),
-                echo=_DEFAULT_CONNECTION_PARAMS.get("echo_queries"),
+                pool_recycle=connection_params.get("pool_recycle"),
+                pool_size=connection_params.get("pool_size"),
+                echo=connection_params.get("echo_queries"),
                 pool_pre_ping=True,
             )
             hook_method: Optional[
                 Callable[[Optional[str], sqlalchemy.engine.Engine], None]
             ] = getattr(self.__class__, "hook_method", None)
             if hook_method:
-                hook_method(self.database, self._engine)
+                hook_method(database, self._engine)
 
         return self._engine
 
@@ -178,7 +184,7 @@ class DatabaseContainer(dict):
         :return: a database instance
         :raises DBNotPreparedError: when set_default_connection_parameters has not yet been called
         """
-        if not _DEFAULT_CONNECTION_PARAMS:
+        if not _DEFAULT_CONNECTION_PARAMS_BY_KEY:
             raise DBNotPreparedError(
                 "Unable to connect to a database, set_default_connection_parameters must first be called"
             )
@@ -192,8 +198,7 @@ class DatabaseContainer(dict):
         """
         The current database instance, retrieved using contextvars (if python 3.7+) or the default database.
         """
-        # pylint: disable=unnecessary-dunder-call
-        return self.__getitem__(_get_current_database())
+        return self.__getitem__(_get_current_database_key())
 
 
 class DatabaseContainerSingleton(DatabaseContainer):

@@ -6,19 +6,9 @@ NOTICE: Adobe permits you to use, modify, and distribute this file in accordance
 with the terms of the Adobe license agreement accompanying it.
 """
 
-from unittest.mock import Mock, patch
-import pytest
+from unittest.mock import Mock
 
 from dysql import set_default_connection_parameters, databases
-
-
-@pytest.fixture(name="mock_create_engine")
-def mock_create_engine_fixture():
-    create_mock = patch("dysql.databases.sqlalchemy.create_engine")
-    try:
-        yield create_mock.start()
-    finally:
-        create_mock.stop()
 
 
 def setup_mock_engine(mock_create_engine):
@@ -37,12 +27,12 @@ def setup_mock_engine(mock_create_engine):
     return mock_engine
 
 
-def _verify_query_params(mock_engine, expected_query, expected_args):
-    _verify_query(mock_engine, expected_query)
-    _verify_query_args(mock_engine, expected_args)
+def verify_query_params(mock_engine, expected_query, expected_args):
+    verify_query(mock_engine, expected_query)
+    verify_query_args(mock_engine, expected_args)
 
 
-def _verify_query(mock_engine, expected_query):
+def verify_query(mock_engine, expected_query):
     execute_call = (
         mock_engine.connect.return_value.execution_options.return_value.execute
     )
@@ -52,7 +42,7 @@ def _verify_query(mock_engine, expected_query):
     assert query == expected_query
 
 
-def _verify_query_args(mock_engine, expected_args):
+def verify_query_args(mock_engine, expected_args):
     execute_call = (
         mock_engine.connect.return_value.execution_options.return_value.execute
     )
